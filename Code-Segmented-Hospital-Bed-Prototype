@@ -1,0 +1,195 @@
+import serial
+import datetime
+import logging
+import csv
+import os
+import math
+
+# Configuração de log
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
+
+# Configuração do arquivo CSV
+csv_file = 'dados_balanca.csv'
+
+# Verifica se o arquivo já existe, caso contrário cria com cabeçalhos
+if not os.path.exists(csv_file):
+    with open(csv_file, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['timestamp', 'measure', 'leitura', 'escala', 'Side', 'Part', 'Weight', 'Percentage'])
+
+# Função para salvar dados no CSV
+def salvar_dados_csv(data):
+    with open(csv_file, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow([data['timestamp'], data['measure'], data.get('leitura', ''), data.get('escala', ''),
+                         data.get('Side', ''), data.get('Part', ''), data.get('Weight', ''), data.get('Percentage', '')])
+
+# Conexão com a porta serial do ESP32
+try:
+    ser = serial.Serial(port='COM3', baudrate=115200, timeout=0.1)
+except serial.SerialException as e:
+    logger.error(f"Falha ao conectar na porta serial: {e}")
+    exit()
+
+# Fatores de calibração ajustados
+#calibration_factors = [0.000003891, 0.00000823, 0.0000037383, 0.00000869565]
+calibration_factors = [0.00428, 0.00897, 0.009816, 0.005887]
+
+# Função para ler dados da porta serial
+def ler_dados_seriais():
+    line = ser.readline().decode('utf-8').strip()
+
+    # Verifica se a linha está vazia ou não começa com "Escala"
+    if not line or not line.startswith('Escala'):
+        return '-1', None  # Retorna valores padrão para tratamento de erro
+
+    # Divide a linha em partes com base em " - " e ":"
+    partes_linha = line.split(' - ')
+    partes_escala = partes_linha[0].split(' ')
+
+    # Extrai a escala e a leitura
+    escala = partes_escala[1]
+    leitura = partes_linha[1].split(':')[1]
+
+    return escala, leitura
+
+# Função para calibrar os dados
+def calibrar_dados(valores_brutos, escala):
+    i = int(escala)
+    calibrated_value = (float(valores_brutos) - float(leituras_validas[i])) * (calibration_factors[i] * cosseno_angulo)
+
+    # Verifica se o valor calibrado é menor ou igual a zero
+    if calibrated_value < 1:
+        calibrated_value = 0
+
+    # Arredonda o valor calibrado para um valor inteiro
+    calibrated_value = round(calibrated_value)
+
+    return calibrated_value
+
+# Função para criar o dicionário de dados
+def criar_dados(leitura, escala):
+   data = {
+        'measure': 'Balanca',
+        'timestamp': datetime.datetime.now(),
+        'leitura': leitura,
+        'escala': escala
+   }
+   return data
+
+# Função para calcular partes do corpo e salvar no CSV
+def calcular_partes_corpo(total_weight, escala, leitura):
+    infos = ['weight', 'percentage']
+
+    tronco = {'head': 0.1816, 'thorax': 0.4843, 'abdomen': 0.31166}
+    arm = {'arm': 1.139889, 'forearm': 0.653618, 'hand': 0.247436}
+    leg = {'pelvis': 0.142, 'thigh': 0.2, 'leg': 0.093, 'foot': 0.029}
+
+    if escala == '0':
+        for part, factor in arm.items():
+            weight = round(float(leitura) * factor, 1)
+            percentage = round((weight / total_weight) * 100, 2)
+            data = {'timestamp': datetime.datetime.now(), 'measure': 'Body', 'Side': 'Right', 'Part': part, 'Weight': weight, 'Percentage': percentage}
+            salvar_dados_csv(data)
+
+    elif escala == '1':
+        for part, factor in tronco.items():
+            weight = round(float(leitura) * factor, 1)
+            percentage = round((weight / total_weight) * 100, 2)
+            data = {'timestamp': datetime.datetime.now(), 'measure': 'Body', 'Side': 'Center', 'Part': part, 'Weight': weight, 'Percentage': percentage}
+            salvar_dados_csv(data)
+
+    elif escala == '2':
+        for part, factor in leg.items():
+            weight = round(float(leitura) * factor, 1)
+            percentage = round((weight / total_weight) * 100, 2)
+            data = {'timestamp': datetime.datetime.now(), 'measure': 'Body', 'Side': 'Bottom', 'Part': part, 'Weight': weight, 'Percentage': percentage}
+            salvar_dados_csv(data)
+
+    elif escala == '3':
+        for part, factor in arm.items():
+            weight = round(float(leitura) * factor, 1)
+            percentage = round((weight / total_weight) * 100, 2)
+            data = {'timestamp': datetime.datetime.now(), 'measure': 'Body', 'Side': 'Left', 'Part': part, 'Weight': weight, 'Percentage': percentage}
+            salvar_dados_csv(data)
+
+# Array para armazenar as leituras válidas
+leituras_validas = []
+primeiro_valor_valido = False
+
+# Solicita ao usuário que insira um número
+angulo = float(input("Por favor, insira a inclinação: "))
+
+# Calcula o cosseno do ângulo
+cosseno_angulo = math.cos(math.radians(angulo))
+
+while len(leituras_validas) < 4:
+    escala, leitura = ler_dados_seriais()
+
+    if leitura != '' and escala != '-1' and not primeiro_valor_valido:
+        primeiro_valor_valido = True
+        contador_validas = 0
+
+    if leitura != '' and escala != '-1' and primeiro_valor_valido:
+        contador_validas += 1
+        leitura_sem_espaco = leitura.strip()
+        leituras_validas.append(leitura_sem_espaco)
+        print(f"Leitura válida inserida: {leitura_sem_espaco}")
+
+        if contador_validas == 4:
+            break
+
+print(f"Leituras válidas coletadas: {leituras_validas}")
+
+# Variáveis de controle
+count_weight = 0
+total_weight = 0
+t_weight = -1
+
+while True:
+    try:
+        escala, leitura = ler_dados_seriais()
+        if escala == '-1' or leitura is None:
+            continue
+
+        if leitura == '':
+            continue
+
+        leitura_sem_espaco = leitura.strip()
+
+        # Calibre a leitura
+        calibrated_value = calibrar_dados(leitura_sem_espaco, escala)
+
+        # Crie o dicionário de dados
+        dados = criar_dados(calibrated_value, escala)
+        
+        print(dados)
+
+        # Salve os dados no CSV
+        salvar_dados_csv(dados)
+
+        if count_weight < 3:
+            total_weight = total_weight + calibrated_value
+            calcular_partes_corpo(t_weight, escala, calibrated_value)
+            count_weight += 1
+        elif count_weight == 3:
+            total_weight = total_weight + calibrated_value
+            t_weight = total_weight
+            total_weight_data = criar_dados([total_weight], '4')
+            salvar_dados_csv(total_weight_data)
+            calcular_partes_corpo(t_weight, escala, calibrated_value)
+            count_weight = 0
+            total_weight = 0
+        else:
+            continue
+
+    except KeyboardInterrupt:
+        logger.info("\nPrograma interrompido pelo usuário.")
+        break
+
+ser.close()
